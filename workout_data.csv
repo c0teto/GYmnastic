@@ -1,3 +1,4 @@
-Fecha,Ejercicio,Peso (kg),Repeticiones,Notas
-2025-07-24,Press militar,5.0,7,
-2025-07-24,Sentadillas,50.0,8,si
+Fecha,Ejercicio,Peso (kg),Repeticiones,Notas,Volumen,1RM,Intensidad,Progreso,RPE
+2025-07-24,Press militar,5.0,7,,35.0,6.166666666666667,1.0,,
+2025-07-24,Sentadillas,50.0,8,si,400.0,63.33333333333333,1.0,,
+2025-07-24,Tricep Pushdown,4.0,8,,32.0,5.066666666666666,1.0,,6.0
