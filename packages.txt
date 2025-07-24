@@ -1,4 +1,0 @@
-python3-tk
-libgl1-mesa-glx
-libxrender1
-libxext
