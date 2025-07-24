@@ -12,60 +12,95 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- Configuración de GitHub ---
-# (Los secrets se configuran en Streamlit Cloud)
-GITHUB_TOKEN = st.secrets["GITHUB"]["TOKEN"]
-REPO_NAME = st.secrets["GITHUB"]["REPO"]
-CSV_PATH = "workout_data.csv"  # Ruta en tu repositorio
+# --- Configuración Segura de GitHub ---
+try:
+    GITHUB_TOKEN = st.secrets["GITHUB"]["TOKEN"]
+    REPO_NAME = st.secrets["GITHUB"]["REPO"]
+    CSV_PATH = "workout_data.csv"
+except KeyError:
+    st.error("Error: Configuración de GitHub no encontrada en secrets")
+    st.stop()
 
-# --- Funciones para manejar GitHub ---
+# --- Funciones Seguras para GitHub ---
 @st.cache_resource
 def get_github_connection():
-    return Github(GITHUB_TOKEN)
+    try:
+        return Github(GITHUB_TOKEN)
+    except Exception as e:
+        st.error(f"Error de conexión con GitHub: {str(e)}")
+        st.stop()
 
-def load_data_from_github():
+def safe_load_data():
     try:
         g = get_github_connection()
         repo = g.get_repo(REPO_NAME)
         contents = repo.get_contents(CSV_PATH)
         data = base64.b64decode(contents.content)
-        return pd.read_csv(io.StringIO(data.decode('utf-8')))
-    except:
-        # Si el archivo no existe, crea uno vacío
-        return pd.DataFrame(columns=[
-            'Fecha', 'Ejercicio', 'Peso (kg)', 'Repeticiones', 'Notas'
-        ])
+        df = pd.read_csv(io.StringIO(data.decode('utf-8')))
+        
+        # Columnas obligatorias
+        required_columns = ['Fecha', 'Ejercicio', 'Peso (kg)', 'Repeticiones']
+        for col in required_columns:
+            if col not in df.columns:
+                df[col] = None if col == 'Fecha' else (0 if 'Peso' in col else 1)
+        
+        return df
+    except Exception as e:
+        st.warning(f"Creando nuevo archivo. Error al cargar datos: {str(e)}")
+        return pd.DataFrame(columns=['Fecha', 'Ejercicio', 'Peso (kg)', 'Repeticiones', 'Notas'])
 
-def save_data_to_github(df):
-    g = get_github_connection()
-    repo = g.get_repo(REPO_NAME)
+def safe_save_data(df):
+    try:
+        g = get_github_connection()
+        repo = g.get_repo(REPO_NAME)
+        
+        # Convertir DataFrame a CSV
+        csv_content = df.to_csv(index=False)
+        
+        try:
+            contents = repo.get_contents(CSV_PATH)
+            repo.update_file(
+                path=contents.path,
+                message=f"Actualización desde Streamlit - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+                content=csv_content,
+                sha=contents.sha
+            )
+        except:
+            repo.create_file(
+                path=CSV_PATH,
+                message="Creación inicial desde Streamlit",
+                content=csv_content
+            )
+        return True
+    except Exception as e:
+        st.error(f"Error al guardar en GitHub: {str(e)}")
+        return False
+
+# --- Manejo Seguro de Fechas ---
+def safe_date_conversion(df):
+    if 'Fecha' not in df.columns:
+        df['Fecha'] = datetime.now().strftime('%Y-%m-%d')
     
     try:
-        contents = repo.get_contents(CSV_PATH)
-        repo.update_file(
-            path=contents.path,
-            message=f"Actualización desde Streamlit - {datetime.now().strftime('%Y-%m-%d %H:%M')}",
-            content=df.to_csv(index=False),
-            sha=contents.sha
-        )
-    except:
-        # Si el archivo no existe, lo crea
-        repo.create_file(
-            path=CSV_PATH,
-            message="Creación inicial desde Streamlit",
-            content=df.to_csv(index=False)
-        )
+        df['Fecha'] = pd.to_datetime(df['Fecha'], errors='coerce')
+        df['Fecha'] = df['Fecha'].fillna(pd.Timestamp('today'))
+    except Exception as e:
+        st.warning(f"Error al convertir fechas: {str(e)}")
+        df['Fecha'] = pd.Timestamp('today')
+    
+    return df
 
-# --- Interfaz de la aplicación ---
+# --- Interfaz de Usuario ---
 st.title("🏋️ Registro de Ejercicios (GitHub Backend)")
 
 # Cargar datos
-df = load_data_from_github()
+df = safe_load_data()
+df = safe_date_conversion(df)
 
 # Sidebar para nuevos registros
 with st.sidebar:
     st.header("➕ Nuevo Registro")
-    with st.form("nuevo_ejercicio"):
+    with st.form("nuevo_ejercicio", clear_on_submit=True):
         fecha = st.date_input("Fecha", datetime.now())
         ejercicio = st.selectbox(
             "Ejercicio",
@@ -75,12 +110,12 @@ with st.sidebar:
         if ejercicio == "Otro":
             ejercicio = st.text_input("Especificar ejercicio")
         peso = st.number_input("Peso (kg)", min_value=0.0, step=0.5)
-        reps = st.number_input("Repeticiones", min_value=1, step=1)
+        reps = st.number_input("Repeticiones", min_value=1, step=1, value=8)
         notas = st.text_area("Notas")
         
-        if st.form_submit_button("Guardar"):
+        if st.form_submit_button("💾 Guardar Ejercicio"):
             nuevo_registro = pd.DataFrame([[
-                fecha,
+                fecha.strftime('%Y-%m-%d'),
                 ejercicio,
                 peso,
                 reps,
@@ -88,37 +123,64 @@ with st.sidebar:
             ]], columns=df.columns)
             
             df = pd.concat([df, nuevo_registro], ignore_index=True)
-            save_data_to_github(df)
-            st.success("¡Registro guardado en GitHub!")
+            if safe_save_data(df):
+                st.success("¡Registro guardado en GitHub!")
+                st.rerun()
+            else:
+                st.error("Error al guardar. Intenta nuevamente.")
 
 # Mostrar datos
 st.header("📊 Tus Registros")
-st.dataframe(df.sort_values("Fecha", ascending=False))
 
-# Gráficos de progreso (requiere matplotlib)
 if not df.empty:
-    st.header("📈 Progreso")
-    ejercicio_seleccionado = st.selectbox(
-        "Seleccionar ejercicio para gráfico",
-        df["Ejercicio"].unique()
-    )
-    
-    df_filtrado = df[df["Ejercicio"] == ejercicio_seleccionado].sort_values("Fecha")
-    
-    if len(df_filtrado) > 1:
-        try:
-            import matplotlib.pyplot as plt
-            
-            fig, ax = plt.subplots(figsize=(10, 5))
-            ax.plot(df_filtrado["Fecha"], df_filtrado["Peso (kg)"], 'o-')
-            ax.set_title(f"Progreso en {ejercicio_seleccionado}")
-            ax.set_xlabel("Fecha")
-            ax.set_ylabel("Peso (kg)")
-            plt.xticks(rotation=45)
-            st.pyplot(fig)
-        except:
-            st.warning("No se pudo cargar matplotlib para gráficos")
-    else:
-        st.warning("Se necesitan al menos 2 registros para mostrar gráficos")
+    try:
+        # Ordenamiento seguro
+        df_sorted = df.sort_values("Fecha", ascending=False, ignore_index=True)
+        st.dataframe(df_sorted, use_container_width=True)
+        
+        # Gráficos de progreso
+        st.header("📈 Progreso")
+        ejercicio_seleccionado = st.selectbox(
+            "Seleccionar ejercicio para gráfico",
+            df["Ejercicio"].unique()
+        )
+        
+        df_filtrado = df[df["Ejercicio"] == ejercicio_seleccionado]
+        df_filtrado = df_filtrado.sort_values("Fecha")
+        
+        if len(df_filtrado) > 1:
+            try:
+                import matplotlib.pyplot as plt
+                
+                fig, ax = plt.subplots(figsize=(10, 5))
+                ax.plot(df_filtrado["Fecha"], df_filtrado["Peso (kg)"], 'o-')
+                ax.set_title(f"Progreso en {ejercicio_seleccionado}")
+                ax.set_xlabel("Fecha")
+                ax.set_ylabel("Peso (kg)")
+                plt.xticks(rotation=45)
+                st.pyplot(fig)
+            except Exception as e:
+                st.warning(f"No se pudo generar gráfico: {str(e)}")
+        else:
+            st.warning("Se necesitan al menos 2 registros para mostrar gráficos")
+    except Exception as e:
+        st.error(f"Error al procesar datos: {str(e)}")
+        st.dataframe(df)  # Fallback seguro
 else:
     st.info("No hay registros aún. ¡Empieza a agregar algunos desde el panel lateral!")
+
+# Sección de respaldo/exportación
+with st.expander("🔒 Opciones de Respaldo"):
+    st.download_button(
+        label="📥 Descargar Copia de Seguridad",
+        data=df.to_csv(index=False).encode('utf-8'),
+        file_name=f"backup_ejercicios_{datetime.now().strftime('%Y%m%d')}.csv",
+        mime='text/csv'
+    )
+    
+    if st.button("🔄 Forzar Recarga de Datos"):
+        st.cache_resource.clear()
+        st.rerun()
+
+st.markdown("---")
+st.caption("ℹ️ Los datos se guardan directamente en tu repositorio GitHub de forma segura")
